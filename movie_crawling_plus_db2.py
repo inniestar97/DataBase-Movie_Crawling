@@ -1,10 +1,47 @@
 from datetime import datetime, timedelta
+from xml.dom.minidom import Attr
 import requests
 from bs4 import BeautifulSoup
 
 import pymysql
 
 baseUrl = "https://movie.naver.com/movie/sdb/rank/rmovie.naver?sel=pnt&date="
+
+insert_sql = """
+    INSERT IGNORE INTO movie(id, title, audience_rate, critic_rate, netizen_rate, runtime, open_year, grade, imgURL)
+    VALUES
+    (%s ,%s ,%s ,%s ,%s ,%s ,%s, %s, %s)
+"""    
+
+insert_actor = """
+    INSERT IGNORE INTO movie_actor(movie_code, actor_code, actor_name, lead_or_support, part_name, actor_imgSrc)
+    VALUES
+    (%s, %s, %s, %s, %s, %s)
+"""
+
+insert_director = """
+    INSERT IGNORE INTO movie_director(movie_code, director_code, director_name, director_imgSrc)
+    VALUES
+    (%s, %s, %s, %s)
+"""
+
+insert_genre = """
+    INSERT IGNORE INTO movie_genre(movie_code, genre_code, genre_name)
+    VALUES
+    (%s, %s, %s)
+"""
+
+insert_country = """
+    INSERT IGNORE INTO movie_country(movie_code, country_code, country_name)
+    VALUES
+    (%s, %s, %s)
+"""
+
+data_movie_list = []
+data_actor_list = []
+data_director_list = []
+data_genre_list = []
+data_country_list = []
 
 def open_db():
     conn = pymysql.connect(host='localhost', user='root',
@@ -104,7 +141,97 @@ def get_movie_abstraction(soup: BeautifulSoup):
 
     return (runtime, openningYear, grade)
 
-def movie_info(movie_url: str):
+def get_movie_actors_directors(soup: BeautifulSoup, movie_code: int):
+    box = soup.select_one("div.sub_tab_area>ul#movieEndTabMenu.end_sub_tab>li>a.tab02.off")
+    detail_page = "https://movie.naver.com/movie/bi/mi/" + box['href'][1:]
+    
+    response = requests.get(detail_page).text
+    detail_soup = BeautifulSoup(response, "html.parser")
+
+    actors = detail_soup.select("div.obj_section.noline>div.made_people>div.lst_people_area.height100>ul.lst_people>li")
+    actor_ret = []
+    if len(actors) == 0:
+        actor_ret = None
+    else:
+        for actor in actors:
+            imgSrc = actor.select_one("p.p_thumb>a>img")['src']
+            p_info = actor.select_one("div.p_info")
+            name = p_info.select_one("a").getText()
+            actor_code = int(p_info.select_one("a")['href'].split('=')[1])
+            in_part = 0 if p_info.select_one("div.part>p.in_prt>em").getText() == "주연" else 1
+            try:
+                part_name = p_info.select_one("div.part>p.pe_cmt>span").getText()
+            except AttributeError:
+                part_name = None
+
+            actor_ret.append((movie_code, actor_code, name, in_part, part_name, imgSrc))
+    if actor_ret != None: 
+        for i in range(len(actor_ret)):
+            print(actor_ret[i][2], end=' ')
+        print()
+
+    director_ret = []
+    try:
+        directors_box = detail_soup.select_one("div.obj_section>div.director")
+        directors = directors_box.select("div.dir_obj")
+
+        for director in directors:
+            imgSrc = director.select_one("p.thumb_dir>a>img")['src']
+            dir_info = director.select_one("div.dir_product")
+            director_code = int(dir_info.select_one('a.k_name')['href'].split('=')[1])
+            name = dir_info.select_one('a.k_name')['title']
+            director_ret.append((movie_code, director_code, name, imgSrc))
+    except AttributeError:
+        director_ret = None
+
+    if director_ret != None:
+        for i in range(len(director_ret)):
+            print(director_ret[i][2], end=' ')
+        print()
+
+    return actor_ret, director_ret
+
+def get_movie_genres(soup: BeautifulSoup, movie_code: int):
+    box = soup.select_one("div.mv_info_area>div.mv_info>dl.info_spec")
+    genre_box = box.select_one("dt.step1+dd")
+    genres_ = genre_box.select_one("p>span")
+    genres = genres_.select("a")
+
+    ret = []
+    try:
+        for genre in genres:
+            genre_code = int(genre['href'].split('=')[1])
+            genre_name = genre.getText()
+            ret.append((movie_code, genre_code, genre_name))
+    except ValueError:
+        ret = None
+    
+    return ret
+
+def get_movie_country(soup: BeautifulSoup, movie_code: int, check: bool):
+    box = soup.select_one("div.mv_info_area>div.mv_info>dl.info_spec")
+    _box = box.select_one("dt.step1+dd")
+    countries_ = _box.select("p>span")
+
+    if check == True:
+        countries = countries_[1].select('a')
+    else:
+        countries = countries_[0].select('a')
+    
+    ret = []
+    for country in countries:
+        country_code = country['href'].split('=')[1] 
+        country_name = country.getText()
+        ret.append((movie_code, country_code, country_name))
+    
+    return ret
+    
+
+def movie_info(movie_url: str, movie_code: int, cur, conn):
+
+    global insert_sql, insert_actor, insert_director, insert_genre, insert_country
+    global data_movie_list, data_actor_list, data_director_list, data_genre_list, data_country_list
+
     response = requests.get(movie_url)
     html = response.text
     soup = BeautifulSoup(html, "html.parser")
@@ -114,26 +241,61 @@ def movie_info(movie_url: str):
         movie_title = soup.select_one("h3.h_movie>a").getText()
     except AttributeError:
         return
-    
-    # 관람객, 평론가, 네티즌 평점
-    audiRate, criticRate, netiRate = get_movie_rate(soup) 
-    # 상영시간, 개봉연도, 영화등급
-    runtime, openningYear, grade = get_movie_abstraction(soup)
 
     try:
         movie_img_url = soup.select_one("div.mv_info_area>div.poster>a>img")["src"]
     except TypeError:
         movie_img_url = soup.select_one("div.mv_info_area>div.poster>img")["src"]
+    
+    # 관람객, 평론가, 네티즌 평점
+    audiRate, criticRate, netiRate = get_movie_rate(soup) 
+    # 상영시간, 개봉연도, 영화등급
+    runtime, openningYear, grade = get_movie_abstraction(soup)
+    movie_abstract = (movie_code, movie_title, audiRate, criticRate, netiRate, runtime, openningYear, grade, movie_img_url)
 
-    return movie_title, audiRate, criticRate, netiRate, runtime, openningYear, grade, movie_img_url
+    genres = get_movie_genres(soup, movie_code)
+    if genres != None:
+        countries = get_movie_country(soup, movie_code, True)
+    else:
+        countries = get_movie_country(soup, movie_code, False)
+    actors, directors = get_movie_actors_directors(soup, movie_code)
+
+    data_movie_list.append(movie_abstract)
+    # print(data_movie_list)
+    if genres != None:
+        data_genre_list += genres
+    data_country_list += countries
+    if actors != None:
+        data_actor_list += actors
+    if directors != None:
+        data_director_list += directors 
+
+    if len(data_movie_list) >= 10:
+        cur.executemany(insert_sql, data_movie_list)
+        conn.commit()
+        data_movie_list = []
+    if len(data_genre_list) >= 10:
+        cur.executemany(insert_genre, data_genre_list)
+        conn.commit()
+        data_genre_list = []
+    if len(data_country_list) >= 10:
+        cur.executemany(insert_country, data_country_list) 
+        conn.commit()
+        data_country_list = []
+    if len(data_actor_list) >= 10:
+        cur.executemany(insert_actor, data_actor_list)
+        conn.commit()
+        data_actor_list = []
+    if len(data_director_list) >= 10:
+        cur.executemany(insert_director, data_director_list)
+        conn.commit()
+        data_director_list = []
+
+#-----------------------------------------------------------------------------
+#---------------main----------------------------------------------------------
+#-----------------------------------------------------------------------------
 
 if __name__ == '__main__':
-
-    insert_sql = """
-        INSERT IGNORE INTO movie(id, title, audience_rate, critic_rate, netizen_rate, runtime, open_year, grade, imgURL)
-        VALUES
-        (%s ,%s ,%s ,%s ,%s ,%s ,%s, %s, %s)
-    """    
 
     conn, cur = open_db()
 
@@ -142,7 +304,7 @@ if __name__ == '__main__':
     url = baseUrl + ''.join(str(now.date()).split('-'))
     # browser = set_edge_driver()
     
-    for i in range(16, 40):
+    for i in range(0, 40):
         page = i + 1
         print("current Page :", page)
 
@@ -150,7 +312,6 @@ if __name__ == '__main__':
         soup = BeautifulSoup(webpage, "html.parser")
         a_source = soup.select("table.list_ranking>tbody>tr>td.title>div.tit5>a")
 
-        data_list = []
         list_url = []
         for ur in a_source:
             list_url.append("https://movie.naver.com/" + ur['href'])
@@ -167,19 +328,8 @@ if __name__ == '__main__':
                 movieList_recur.append("https://movie.naver.com/" + a_thumb_source[i]['href'])
 
             movie_code = movie.split('=')[1]
-            data = movie_info(movie)
+            movie_info(movie, movie_code, cur, conn)
 
-            if data != None:
-                insert_list = list(data)
-                insert_list.insert(0, movie_code)
-                insert_list = tuple(insert_list)
-                data_list.append(insert_list)
-                if len(data_list) >= 30:
-                    cur.executemany(insert_sql, data_list)
-                    conn.commit()
-                    data_list = []
-            else:
-                continue
 
         movieList_recur2 = []
         for movie in movieList_recur:
@@ -192,41 +342,24 @@ if __name__ == '__main__':
                 movieList_recur2.append("https://movie.naver.com/" + a_thumb_source[i]['href'])
 
             movie_code = movie.split('=')[1]
-            data = movie_info(movie)
+            movie_info(movie, movie_code, cur, conn)
 
-            if data != None:
-                insert_list = list(data)
-                insert_list.insert(0, movie_code)
-                insert_list = tuple(insert_list)
-                data_list.append(insert_list)
-                if len(data_list) >= 30:
-                    cur.executemany(insert_sql, data_list)
-                    conn.commit()
-                    data_list = []
-            else:
-                continue
 
         for movie in movieList_recur2:
             print("Re, RE: current Page : ", page, ":", movie)
             movie_code = movie.split('=')[1]
-            data = movie_info(movie)
+            movie_info(movie, movie_code, cur, conn)
+            
+    cur.executemany(insert_sql, data_movie_list)
+    conn.commit()
+    cur.executemany(insert_genre, data_genre_list)
+    conn.commit()
+    cur.executemany(insert_country, data_country_list)
+    conn.commit()
+    cur.executemany(insert_actor, data_actor_list)
+    conn.commit()
+    cur.executemany(insert_director, data_director_list)
+    conn.commit()
 
-            if data != None:
-                insert_list = list(data)
-                insert_list.insert(0, movie_code)
-                insert_list = tuple(insert_list)
-                data_list.append(insert_list)
-                if len(data_list) >= 30:
-                    cur.executemany(insert_sql, data_list)
-                    conn.commit()
-                    data_list = []
-            else:
-                continue
-            
-        cur.executemany(insert_sql, data_list)
-        conn.commit()
-        data_list = []
-                
-            
     close_db(conn, cur)
             
