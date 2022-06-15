@@ -105,7 +105,10 @@ def get_movie_rate(soup: BeautifulSoup):
         rate = ""
         for i in nums:
             rate += i.getText()
-        netiRate = float(rate)
+        try:
+            netiRate = float(rate)
+        except ValueError:
+            netiRate = None
 
     return (audiRate, criticRate, netiRate)
 
@@ -142,8 +145,13 @@ def get_movie_abstraction(soup: BeautifulSoup):
     return (runtime, openningYear, grade)
 
 def get_movie_actors_directors(soup: BeautifulSoup, movie_code: int):
+
     box = soup.select_one("div.sub_tab_area>ul#movieEndTabMenu.end_sub_tab>li>a.tab02.off")
-    detail_page = "https://movie.naver.com/movie/bi/mi/" + box['href'][1:]
+
+    try:
+        detail_page = "https://movie.naver.com/movie/bi/mi/" + box['href'][1:]
+    except TypeError:
+        return None, None
     
     response = requests.get(detail_page).text
     detail_soup = BeautifulSoup(response, "html.parser")
@@ -154,10 +162,22 @@ def get_movie_actors_directors(soup: BeautifulSoup, movie_code: int):
         actor_ret = None
     else:
         for actor in actors:
-            imgSrc = actor.select_one("p.p_thumb>a>img")['src']
+            try:
+                imgSrc = actor.select_one("p.p_thumb>a>img")['src']
+            except TypeError:
+                imgSrc = actor.select_one("p.p_thumb>span>img")['src']
             p_info = actor.select_one("div.p_info")
-            name = p_info.select_one("a").getText()
-            actor_code = int(p_info.select_one("a")['href'].split('=')[1])
+            
+            try:
+                name = p_info.select_one("a").getText()
+            except AttributeError: 
+                name = actor.select_one('p.p_thumb>span>img')['alt']
+
+            try:
+                actor_code = int(p_info.select_one("a")['href'].split('=')[1])
+            except TypeError:
+                actor_code = None
+
             in_part = 0 if p_info.select_one("div.part>p.in_prt>em").getText() == "주연" else 1
             try:
                 part_name = p_info.select_one("div.part>p.pe_cmt>span").getText()
@@ -165,10 +185,6 @@ def get_movie_actors_directors(soup: BeautifulSoup, movie_code: int):
                 part_name = None
 
             actor_ret.append((movie_code, actor_code, name, in_part, part_name, imgSrc))
-    if actor_ret != None: 
-        for i in range(len(actor_ret)):
-            print(actor_ret[i][2], end=' ')
-        print()
 
     director_ret = []
     try:
@@ -183,11 +199,6 @@ def get_movie_actors_directors(soup: BeautifulSoup, movie_code: int):
             director_ret.append((movie_code, director_code, name, imgSrc))
     except AttributeError:
         director_ret = None
-
-    if director_ret != None:
-        for i in range(len(director_ret)):
-            print(director_ret[i][2], end=' ')
-        print()
 
     return actor_ret, director_ret
 
@@ -247,6 +258,7 @@ def movie_info(movie_url: str, movie_code: int, cur, conn):
     except TypeError:
         movie_img_url = soup.select_one("div.mv_info_area>div.poster>img")["src"]
     
+    print(movie_title)    
     # 관람객, 평론가, 네티즌 평점
     audiRate, criticRate, netiRate = get_movie_rate(soup) 
     # 상영시간, 개봉연도, 영화등급
@@ -303,6 +315,17 @@ if __name__ == '__main__':
 
     url = baseUrl + ''.join(str(now.date()).split('-'))
     # browser = set_edge_driver()
+
+    # for i in range(10000):
+    #     mv_cd = str(18000 + i)
+        
+    #     mv_url = "https://movie.naver.com/movie/bi/mi/basic.naver?code=" + mv_cd
+
+    #     wepage = requests.get(mv_url).text
+    #     soup = BeautifulSoup(wepage, "html.parser")
+
+    #     movie_info(mv_url,int(mv_cd), cur, conn)
+
     
     for i in range(0, 40):
         page = i + 1
