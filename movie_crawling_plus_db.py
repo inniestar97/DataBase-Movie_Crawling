@@ -32,6 +32,7 @@ def set_edge_driver() -> WebDriver:
     return driver
 
 def get_movie_rate(soup: BeautifulSoup):
+
     
     try:
         scoreDiv = soup.select_one("div.mv_info").select_one("div.main_score").select("div.star_score")
